@@ -1,0 +1,30 @@
+{
+    "custom_fonts": [
+      "https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap"
+    ],
+    "variables": {
+      "light": {
+        "--font-sans": "'Poppins', sans-serif",
+        "--primary": "120 61% 34%", 
+        "--primary-foreground": "0 0% 100%",  
+        "--background": "100 100% 95%", 
+        "--foreground": "120 100% 20%",  
+        "--sidebar-background": "90 40% 90%",  
+        "--sidebar-foreground": "120 30% 25%",  
+        "--ring": "20 61% 34%",  
+        "--radius": "0.5rem"
+      },
+      "dark": {
+        "--font-sans": "'Poppins', sans-serif",
+        "--primary": "120 61% 40%",  
+        "--primary-foreground": "0 0% 100%",
+        "--background": "120 10% 10%",  
+        "--foreground": "90 20% 85%",  
+        "--sidebar-background": "120 10% 15%",  
+        "--sidebar-foreground": "90 15% 70%",  
+        "--ring": "120 61% 40%",
+        "--radius": "0.5rem"
+      }
+    }
+  }
+  

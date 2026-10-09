@@ -1,0 +1,27 @@
+[project]
+name = "gis-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "vijay rajesh", email = "ewe111.vijay@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "chainlit>=2.4.400",
+    "earthengine-api>=1.5.9",
+    "google-generativeai>=0.8.4",
+    "matplotlib>=3.10.1",
+    "openai-agents>=0.0.7",
+    "pillow>=11.1.0",
+    "reportlab>=4.3.1",
+    "requests>=2.32.3",
+    "streamlit>=1.44.1",
+]
+
+[project.scripts]
+gis-agent = "gis_agent:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

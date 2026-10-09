@@ -1,0 +1,24 @@
+# Core dependencies
+chainlit
+openai
+python-dotenv
+requests
+
+# Earth Engine
+earthengine-api
+
+# Plotting
+matplotlib
+numpy
+
+# PDF generation
+reportlab
+
+# For typing (optional but nice)
+typing-extensions
+
+# If you're using Google Gemini via OpenAI-compatible API
+# Add the Gemini-compatible library here (e.g., together, groq, etc.)
+
+# Streamlit version (if converting)
+streamlit
