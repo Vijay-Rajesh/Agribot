@@ -7,7 +7,7 @@ import chainlit as cl
 from agents import Agent
 
 from Agents.farmbot_agent import create_farmbot_agent
-from config import initialize_earth_engine, setup_gemini, setup_groq
+from config import initialize_earth_engine, setup_gemini, setup_groq, setup_openai
 from services.analysis import FarmBotAnalyzer
 from services.government import GovernmentSchemes
 from services.image_analysis import (
@@ -20,7 +20,7 @@ from services.weather import WeatherAPI
 
 
 initialize_earth_engine()
-model_router = ModelProviderRouter(setup_groq(), setup_gemini())
+model_router = ModelProviderRouter(setup_openai(), setup_groq(), setup_gemini())
 logger = logging.getLogger(__name__)
 
 
@@ -35,19 +35,19 @@ def _temporary_model_error_message(language: str) -> str:
 
 def _model_error_message(language: str, error: BaseException) -> str:
     status = model_http_status(error)
-    if status == 429 and model_router.gemini_config is None:
+    if status == 429:
         return _localized(
             language,
-            "Groq's usage limit was reached, but Gemini fallback is not configured. Add a valid GEMINI_API_KEY or try again after Groq's limit resets.",
-            "Groq ki usage limit poori ho gayi hai aur Gemini fallback configured nahi hai. Valid GEMINI_API_KEY add karein ya Groq limit reset hone ke baad try karein.",
-            "Groq کی استعمال کی حد پوری ہو گئی ہے، لیکن Gemini fallback فعال نہیں۔ درست GEMINI_API_KEY شامل کریں یا Groq کی حد بحال ہونے کے بعد دوبارہ کوشش کریں۔",
+            "All configured AI providers are rate-limited right now. Please try again after their limits reset.",
+            "Abhi configured AI providers ki usage limits poori hain. Limits reset hone ke baad dobara koshish karein.",
+            "تمام فعال AI فراہم کنندگان کی حد اس وقت پوری ہے۔ حدود بحال ہونے کے بعد دوبارہ کوشش کریں۔",
         )
-    if status in (400, 401, 403) and not model_router.groq_quota_available:
+    if status in (400, 401, 403):
         return _localized(
             language,
-            "Gemini rejected its fallback request. Create a new API key at https://aistudio.google.com/app/apikey, replace GEMINI_API_KEY in the project's root .env file (keep GROQ_API_KEY unchanged), then restart FarmBot. Never send your key in chat.",
-            "Gemini fallback request reject ho gayi. https://aistudio.google.com/app/apikey par nayi API key banayein; project ke root .env mein GEMINI_API_KEY replace karein (GROQ_API_KEY ko na badlein), phir FarmBot restart karein. Key chat mein kabhi share na karein.",
-            "Gemini کی fallback درخواست مسترد ہو گئی۔ https://aistudio.google.com/app/apikey پر نئی API key بنائیں، project کی root .env فائل میں GEMINI_API_KEY تبدیل کریں (GROQ_API_KEY نہ بدلیں)، پھر FarmBot restart کریں۔ اپنی key چیٹ میں کبھی نہ بھیجیں۔",
+            "A configured AI provider rejected the request. Check its API key and model configuration; never share API keys in chat.",
+            "Ek configured AI provider ne request reject kar di. Uski API key aur model configuration check karein; API key chat mein share na karein.",
+            "ایک فعال AI فراہم کنندہ نے درخواست مسترد کر دی۔ اس کی API key اور model configuration چیک کریں؛ API key چیٹ میں شیئر نہ کریں۔",
         )
     return _temporary_model_error_message(language)
 
@@ -55,9 +55,9 @@ def _model_error_message(language: str, error: BaseException) -> str:
 def _groq_fallback_message(language: str) -> str:
     return _localized(
         language,
-        "Groq's current usage limit was reached. Continuing with Gemini for this and upcoming requests until Groq's limit resets.",
-        "Groq ki current usage limit poori ho gayi. Is request aur agle requests ke liye Groq limit reset hone tak Gemini use hoga.",
-        "Groq کی موجودہ استعمال کی حد پوری ہو گئی ہے۔ حد دوبارہ بحال ہونے تک اس اور آئندہ درخواستوں کے لیے Gemini استعمال ہوگا۔",
+        "An AI provider's usage limit was reached. Continuing with the next available configured provider.",
+        "Ek AI provider ki usage limit poori ho gayi. Ab agla available configured provider use hoga.",
+        "ایک AI فراہم کنندہ کی حد پوری ہو گئی ہے۔ اب اگلا دستیاب فعال فراہم کنندہ استعمال ہوگا۔",
     )
 
 
@@ -392,9 +392,9 @@ async def handle_crop_image(message: cl.Message, user_input: str, language: str)
         else:
             msg.content = _localized(
                 language,
-                "I couldn't analyze the image right now. Please try again; if this continues, check the Groq API key/model and the Gemini fallback key.",
-                "Abhi image analyze nahi ho saki. Dobara koshish karein; agar masla rahe to Groq API key/model aur Gemini fallback key check karein.",
-                "ابھی تصویر کا تجزیہ نہیں ہو سکا۔ دوبارہ کوشش کریں؛ مسئلہ برقرار رہے تو Groq API key/model اور Gemini fallback key چیک کریں۔",
+                "I couldn't analyze the image right now. Please try again; if this continues, check your configured AI provider keys and model settings.",
+                "Abhi image analyze nahi ho saki. Dobara koshish karein; masla rahe to configured AI provider keys aur model settings check karein.",
+                "ابھی تصویر کا تجزیہ نہیں ہو سکا۔ دوبارہ کوشش کریں؛ مسئلہ برقرار رہے تو فعال AI فراہم کنندگان کی keys اور model settings چیک کریں۔",
             )
     await msg.update()
 

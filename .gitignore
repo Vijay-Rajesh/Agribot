@@ -12,5 +12,8 @@ venv
 .venv312
 venv312/
 .chainlit/
+!/.chainlit/
+/.chainlit/*
+!/.chainlit/config.toml
 chainlit.md
 generated/

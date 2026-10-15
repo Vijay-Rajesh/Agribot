@@ -54,7 +54,7 @@ def _model_run_config(api_key: str, base_url: str, model_name: str, *, groq: boo
                     "multiplier": 2,
                     "jitter": True,
                 },
-                policy=_transient_server_error_retry if groq else None,
+                policy=_transient_server_error_retry,
             )
         ),
         tracing_disabled=True,
@@ -62,7 +62,7 @@ def _model_run_config(api_key: str, base_url: str, model_name: str, *, groq: boo
 
 
 def setup_groq():
-    """Create the primary Groq model config, or None when no API key is set."""
+    """Create the Groq fallback model config, or None when no API key is set."""
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         return None
@@ -71,6 +71,18 @@ def setup_groq():
         "https://api.groq.com/openai/v1",
         "qwen/qwen3.8-27b",
         groq=True,
+    )
+
+
+def setup_openai():
+    """Create the primary OpenAI model config, or None when no API key is set."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    return _model_run_config(
+        api_key,
+        "https://api.openai.com/v1",
+        "gpt-5-nano",
     )
 
 

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from PIL import Image
 from agents.models.chatcmpl_converter import Converter
 
-from config import setup_gemini, setup_groq
+from config import setup_gemini, setup_groq, setup_openai
 from services.image_analysis import (
     ImageUploadError,
     crop_analysis_instructions,
@@ -102,7 +102,24 @@ class CropAnalysisInstructionsTests(unittest.TestCase):
                 self.assertIn(opening, crop_analysis_instructions(language))
 
 
-class GeminiRetryConfigTests(unittest.TestCase):
+class ProviderRetryConfigTests(unittest.TestCase):
+    def test_openai_uses_openai_compatible_api_with_configured_key(self):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+            run_config = setup_openai()
+
+        self.assertEqual(run_config.model.model, "gpt-4o-mini")
+        self.assertFalse(
+            run_config.model_settings.retry.policy(
+                SimpleNamespace(
+                    normalized=SimpleNamespace(
+                        status_code=429,
+                        is_network_error=False,
+                        is_timeout=False,
+                    )
+                )
+            ).retry
+        )
+
     def test_run_config_retries_transient_model_failures(self):
         with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}):
             run_config = setup_gemini()

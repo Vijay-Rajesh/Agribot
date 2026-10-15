@@ -63,37 +63,60 @@ def _quota_cooldown_seconds(error: BaseException) -> float:
 
 
 class ModelProviderRouter:
-    """Routes model calls to Groq first and bypasses exhausted Groq quota until reset."""
+    """Routes calls through OpenAI, Groq, and Gemini in priority order."""
 
-    def __init__(self, groq_config, gemini_config):
-        if groq_config is None and gemini_config is None:
-            raise RuntimeError("Configure at least one of GROQ_API_KEY or GEMINI_API_KEY.")
+    def __init__(self, openai_config, groq_config, gemini_config):
+        self._providers = [
+            (name, config)
+            for name, config in (
+                ("OpenAI", openai_config),
+                ("Groq", groq_config),
+                ("Gemini", gemini_config),
+            )
+            if config is not None
+        ]
+        if not self._providers:
+            raise RuntimeError(
+                "Configure at least one of OPENAI_API_KEY, GROQ_API_KEY, or GEMINI_API_KEY."
+            )
+        if openai_config is None:
+            logger.warning("OPENAI_API_KEY is missing; using the next configured provider.")
         if groq_config is None:
-            logger.warning("GROQ_API_KEY is missing; Gemini will be used as the primary model.")
+            logger.warning("GROQ_API_KEY is missing; Groq fallback is unavailable.")
         if gemini_config is None:
-            logger.warning("GEMINI_API_KEY is missing; Groq quota fallback is unavailable.")
+            logger.warning("GEMINI_API_KEY is missing; Gemini fallback is unavailable.")
+
+        self.openai_config = openai_config
         self.groq_config = groq_config
         self.gemini_config = gemini_config
-        self._groq_disabled_until = 0.0
-
-    @property
-    def groq_quota_available(self) -> bool:
-        return self.groq_config is not None and time.monotonic() >= self._groq_disabled_until
+        self._disabled_until = {name: 0.0 for name, _ in self._providers}
+        self.last_provider_name = None
 
     def _primary_config(self):
-        if self.groq_quota_available:
-            return self.groq_config, True
-        if self.gemini_config is None:
-            return self.groq_config, True
-        return self.gemini_config, False
+        now = time.monotonic()
+        for name, config in self._providers:
+            if now >= self._disabled_until[name]:
+                return config, name
+        return min(self._providers, key=lambda item: self._disabled_until[item[0]])
 
-    def _mark_groq_quota_exhausted(self, error: BaseException) -> None:
+    def _mark_quota_exhausted(self, provider_name: str, error: BaseException) -> None:
         cooldown = _quota_cooldown_seconds(error)
-        self._groq_disabled_until = time.monotonic() + cooldown
+        self._disabled_until[provider_name] = time.monotonic() + cooldown
+        self.last_provider_name = provider_name
         logger.warning(
-            "Groq returned HTTP 429; routing model calls to Gemini for %.1f seconds.",
+            "%s returned HTTP 429; bypassing it for %.1f seconds.",
+            provider_name,
             cooldown,
         )
+
+    def _next_config(self, after_provider: str, tried: set[str]):
+        now = time.monotonic()
+        provider_names = [name for name, _ in self._providers]
+        start = provider_names.index(after_provider) + 1
+        for name, config in self._providers[start:]:
+            if name not in tried and now >= self._disabled_until[name]:
+                return config, name
+        return None
 
     def run_streamed(
         self,
@@ -110,23 +133,25 @@ class ModelProviderRouter:
         input: Any,
         starting_agent,
     ):
-        run_config, using_groq = self._primary_config()
-        try:
-            return await Runner.run(
-                input=input,
-                run_config=run_config,
-                starting_agent=starting_agent,
-            )
-        except Exception as exc:
-            if not using_groq or model_http_status(exc) != 429 or self.gemini_config is None:
-                raise
-            self._mark_groq_quota_exhausted(exc)
-            logger.info("Retrying the current model request with Gemini after Groq quota exhaustion.")
-            return await Runner.run(
-                input=input,
-                run_config=self.gemini_config,
-                starting_agent=starting_agent,
-            )
+        run_config, provider_name = self._primary_config()
+        tried = set()
+        while True:
+            tried.add(provider_name)
+            try:
+                return await Runner.run(
+                    input=input,
+                    run_config=run_config,
+                    starting_agent=starting_agent,
+                )
+            except Exception as exc:
+                if model_http_status(exc) != 429:
+                    raise
+                self._mark_quota_exhausted(provider_name, exc)
+                next_provider = self._next_config(provider_name, tried)
+                if next_provider is None:
+                    raise
+                run_config, provider_name = next_provider
+                logger.info("Retrying the current model request with %s.", provider_name)
 
 
 class _RoutedStream:
@@ -144,35 +169,37 @@ class _RoutedStream:
         self.final_output = None
 
     async def stream_events(self) -> AsyncIterator[Any]:
-        run_config, using_groq = self.router._primary_config()
-        try:
-            result = Runner.run_streamed(
-                input=self.input,
-                run_config=run_config,
-                starting_agent=self.starting_agent,
-            )
-            async for event in result.stream_events():
-                yield event
-            self.final_output = result.final_output
-            return
-        except Exception as exc:
-            if not using_groq or model_http_status(exc) != 429 or self.router.gemini_config is None:
-                raise
-            self.router._mark_groq_quota_exhausted(exc)
-            logger.info("Retrying the current model request with Gemini after Groq quota exhaustion.")
-
+        run_config, provider_name = self.router._primary_config()
+        tried = set()
         fallback_callback = self.on_fallback
-        fallback_announced = fallback_callback is None
-        result = Runner.run_streamed(
-            input=self.input,
-            run_config=self.router.gemini_config,
-            starting_agent=self.starting_agent,
-        )
-        async for event in result.stream_events():
-            if fallback_callback is not None and not fallback_announced:
-                await fallback_callback()
-                fallback_announced = True
-            yield event
-        if fallback_callback is not None and not fallback_announced:
-            await fallback_callback()
-        self.final_output = result.final_output
+        fallback_announced = False
+        while True:
+            tried.add(provider_name)
+            try:
+                result = Runner.run_streamed(
+                    input=self.input,
+                    run_config=run_config,
+                    starting_agent=self.starting_agent,
+                )
+                async for event in result.stream_events():
+                    if (
+                        fallback_callback is not None
+                        and not fallback_announced
+                        and len(tried) > 1
+                    ):
+                        await fallback_callback()
+                        fallback_announced = True
+                    yield event
+                self.final_output = result.final_output
+                if fallback_callback is not None and not fallback_announced and len(tried) > 1:
+                    await fallback_callback()
+                return
+            except Exception as exc:
+                if model_http_status(exc) != 429:
+                    raise
+                self.router._mark_quota_exhausted(provider_name, exc)
+                next_provider = self.router._next_config(provider_name, tried)
+                if next_provider is None:
+                    raise
+                run_config, provider_name = next_provider
+                logger.info("Retrying the current model request with %s.", provider_name)

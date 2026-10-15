@@ -29,9 +29,10 @@ class FakeStream:
 
 class ModelProviderRouterTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.openai = object()
         self.groq = object()
         self.gemini = object()
-        self.router = ModelProviderRouter(self.groq, self.gemini)
+        self.router = ModelProviderRouter(None, self.groq, self.gemini)
 
     async def test_streamed_quota_error_falls_back_and_routes_next_request_to_gemini(self):
         assistant_event = SimpleNamespace(
@@ -59,8 +60,26 @@ class ModelProviderRouterTests(unittest.IsolatedAsyncioTestCase):
             [self.groq, self.gemini, self.gemini],
         )
 
+    async def test_openai_is_primary_and_exhaustion_falls_through_groq_to_gemini(self):
+        router = ModelProviderRouter(self.openai, self.groq, self.gemini)
+        fallback_result = object()
+        with patch(
+            "services.model_routing.Runner.run",
+            new_callable=AsyncMock,
+            side_effect=[rate_limit_error(), rate_limit_error(), fallback_result],
+        ) as run:
+            result = await router.run(input="hello", starting_agent=object())
+
+        self.assertIs(result, fallback_result)
+        self.assertEqual(
+            [call.kwargs["run_config"] for call in run.await_args_list],
+            [self.openai, self.groq, self.gemini],
+        )
+        self.assertEqual(router.last_provider_name, "Groq")
+
     async def test_reset_header_controls_groq_cooldown(self):
-        self.router._mark_groq_quota_exhausted(
+        self.router._mark_quota_exhausted(
+            "Groq",
             rate_limit_error(
                 {
                     "x-ratelimit-remaining-requests": "0",
@@ -69,7 +88,7 @@ class ModelProviderRouterTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        self.assertFalse(self.router.groq_quota_available)
+        self.assertEqual(self.router._primary_config(), (self.gemini, "Gemini"))
 
     async def test_failed_gemini_fallback_does_not_announce_success(self):
         on_fallback = AsyncMock()
@@ -116,7 +135,7 @@ class ModelProviderRouterTests(unittest.IsolatedAsyncioTestCase):
                 await self.router.run(input="hello", starting_agent=object())
 
         run.assert_awaited_once()
-        self.assertTrue(self.router.groq_quota_available)
+        self.assertEqual(self.router._disabled_until["Groq"], 0.0)
 
     async def test_nonstreamed_quota_error_falls_back(self):
         fallback_result = object()
