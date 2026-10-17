@@ -18,7 +18,6 @@ import tempfile
 import os
 import matplotlib.pyplot as plt
 import numpy as np
-from services.government import GovernmentSchemes
 from xml.sax.saxutils import escape
 
 logger = logging.getLogger(__name__)
@@ -911,21 +910,6 @@ class FarmBotAnalyzer:
                 elements.append(Paragraph("No specific recommendations available based on current analysis.", styles['BodyText']))
             
             elements.append(Spacer(1, 0.3*inch))
-            
-            # Government schemes section
-            elements.append(Paragraph("Applicable Government Schemes", styles['Heading2']))
-            elements.append(Spacer(1, 0.1*inch))
-            
-            schemes = GovernmentSchemes.get_scheme_info(None, 'english')
-            if schemes and isinstance(schemes, list):
-                for scheme in schemes[:3]:  # Show top 3 relevant schemes
-                    elements.append(Paragraph(f"<b>{scheme.get('name', 'N/A')}</b>", styles['BodyText']))
-                    elements.append(Paragraph(scheme.get('description', 'No description available'), styles['BodyText']))
-                    elements.append(Spacer(1, 0.1*inch))
-            else:
-                elements.append(Paragraph("Contact local agriculture office for scheme information.", styles['BodyText']))
-            
-            elements.append(Spacer(1, 0.5*inch))
             
             # Add page break if not last point
             if point_key != list(data.keys())[-1]:

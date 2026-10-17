@@ -23,6 +23,7 @@ def crop_analysis_instructions(language: str) -> str:
     instructions = {
         "english": (
             "Analyze the attached crop photo as a cautious visual triage, not a confirmed diagnosis. "
+            "Keep the complete answer under 100 words, with one short sentence per section. "
             "Use this exact response order and do not begin with a generic disclaimer or a symptom list: "
             "1. Start with '**Most likely disease/condition:** [best-supported name] — confidence: [low/medium/high]' "
             "on the first line. If the image cannot distinguish one disease, name the likely disease complex or "
@@ -40,7 +41,8 @@ def crop_analysis_instructions(language: str) -> str:
             "be relevant, advise consulting a local agronomist and following locally registered product labels."
         ),
         "hinglish": (
-            "Attached crop photo ka ehtiyaat se visual triage karein, final diagnosis nahi. Jawab isi order mein "
+            "Jawab 100 alfaaz se kam rakhein, har section mein ek chhota jumla. Attached crop photo ka ehtiyaat se "
+            "visual triage karein, final diagnosis nahi. Jawab isi order mein "
             "dena hai; shuruat generic disclaimer ya symptoms ki list se na karein: "
             "1. Pehli line '**Sabse mumkin disease/condition:** [sabse zyada supported naam] — confidence: [low/medium/high]' "
             "likhein. Agar ek disease confirm karna mumkin nahi, to mumkin disease-complex ya symptom category ka naam "
@@ -58,7 +60,8 @@ def crop_analysis_instructions(language: str) -> str:
             "mashwara aur locally registered product label follow karne ko kahein."
         ),
         "urdu": (
-            "منسلک فصل کی تصویر کا محتاط بصری جائزہ لیں، اسے حتمی تشخیص نہ کہیں۔ جواب اسی ترتیب میں دیں اور ابتدا "
+            "جواب 100 الفاظ سے کم اور ہر حصے میں ایک مختصر جملہ رکھیں۔ منسلک فصل کی تصویر کا محتاط بصری جائزہ لیں، "
+            "اسے حتمی تشخیص نہ کہیں۔ جواب اسی ترتیب میں دیں اور ابتدا "
             "عمومی وضاحت یا علامات کی فہرست سے نہ کریں: "
             "1. پہلی سطر '**زیادہ ممکنہ بیماری/مسئلہ:** [تصویر سے زیادہ مطابقت رکھنے والا نام] — اعتماد: [کم/درمیانہ/زیادہ]' "
             "ہو۔ اگر تصویر سے ایک بیماری الگ پہچاننا ممکن نہ ہو تو ممکنہ بیماریوں کے مجموعے یا علامات کی قسم کا نام دیں "

@@ -1,5 +1,6 @@
 from dotenv import load_dotenv, find_dotenv
 import os
+import logging
 import ee
 from agents import (
     AsyncOpenAI,
@@ -14,13 +15,18 @@ from agents import (
 # Load environment variables
 load_dotenv(find_dotenv())
 
+logger = logging.getLogger(__name__)
+
+
 def initialize_earth_engine():
-    """Initialize Earth Engine"""
+    """Initialize Earth Engine and report whether the client is ready."""
     try:
         ee.Initialize(project='ee-ewe111vijay')
-        print("Earth Engine initialized successfully")
-    except Exception as e:
-        print(f"Error initializing Earth Engine: {e}")
+    except Exception:
+        logger.exception("Could not initialize Earth Engine")
+        return False
+    logger.info("Earth Engine initialized successfully")
+    return True
 
 def _transient_server_error_retry(context: RetryPolicyContext) -> RetryDecision:
     status = context.normalized.status_code

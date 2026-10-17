@@ -33,7 +33,6 @@ class FarmBotNaturalLanguageToolTests(unittest.IsolatedAsyncioTestCase):
             {
                 "analyze_satellite_indices",
                 "check_current_weather",
-                "get_government_agricultural_schemes",
             },
         )
 
@@ -120,16 +119,6 @@ class FarmBotNaturalLanguageToolTests(unittest.IsolatedAsyncioTestCase):
             start_date="2026-01-01",
             end_date="2026-02-01",
         )
-
-    async def test_scheme_tool_returns_localized_reference_data(self):
-        result = await self.invoke(
-            "get_government_agricultural_schemes",
-            {"scheme_name": "Tubewell Subsidy"},
-        )
-
-        self.assertEqual(result["name"], "Tubewell Subsidy")
-        self.assertIn("ٹیوب ویل سبسڈی", result["description"])
-
 
 if __name__ == "__main__":
     unittest.main()

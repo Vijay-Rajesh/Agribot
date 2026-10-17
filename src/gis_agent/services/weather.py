@@ -17,8 +17,11 @@ class WeatherAPI:
             return {"error": "Weather API key not configured"}
         
         try:
-            url = f"https://api.weatherapi.com/v1/current.json?key={api_key}&q={lat},{lon}"
-            response = requests.get(url, timeout=15)
+            response = requests.get(
+                "https://api.weatherapi.com/v1/current.json",
+                params={"key": api_key, "q": f"{lat},{lon}"},
+                timeout=15,
+            )
             data = response.json()
 
             if response.status_code != 200:
@@ -39,4 +42,4 @@ class WeatherAPI:
             return weather_data
             
         except Exception as e:
-            return {"error": f"Weather data fetch failed: {str(e)}"}
+            return {"error": f"Weather data fetch failed ({type(e).__name__})"}

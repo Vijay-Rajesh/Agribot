@@ -9,7 +9,6 @@ import chainlit as cl
 from agents import Agent, function_tool
 
 from services.analysis import FarmBotAnalyzer
-from services.government import GovernmentSchemes
 from services.weather import WeatherAPI
 
 
@@ -180,34 +179,6 @@ def create_farmbot_agent(
             "weather": weather,
         }, ensure_ascii=False)
 
-    @function_tool
-    def get_government_agricultural_schemes(
-        scheme_name: Optional[str] = None,
-    ) -> str:
-        """Look up the locally available Pakistani agricultural schemes.
-
-        Use this for scheme names, eligibility, and listed benefits. This is
-        reference information, not live application or current-status tracking.
-        Omit scheme_name to return all available schemes.
-        """
-        known_name = next(
-            (
-                name for name in GovernmentSchemes.SCHEMES
-                if scheme_name and name.casefold() == scheme_name.strip().casefold()
-            ),
-            None,
-        )
-        result = GovernmentSchemes.get_scheme_info(
-            known_name or scheme_name,
-            preferred_language,
-        )
-        if "error" in result:
-            result = {
-                "error": result["error"],
-                "available_schemes": list(GovernmentSchemes.SCHEMES),
-            }
-        return json.dumps(result, ensure_ascii=False)
-
     language_instructions = {
         "english": "Respond in clear, professional English.",
         "hinglish": "Respond in natural Roman-script Hinglish (Hindi/Urdu mixed with English), not Urdu script.",
@@ -218,13 +189,24 @@ def create_farmbot_agent(
         name="FarmBot",
         instructions=f"""
 You are FarmBot, a professional agricultural assistant. {language_instructions}
-Understand natural requests and follow-up messages in the user's chosen language,
-including colloquial Hinglish and Urdu. Be concise, respectful, and do not invent
+On every turn, respond in the language and writing system used in the user's latest
+message, and switch immediately when they switch. Use Roman script for Roman Urdu
+or Hindi and Urdu script when the user writes in Urdu script. Understand natural
+requests and follow-ups in the language used in each message, including colloquial
+Roman Urdu/Hindi and Urdu. Be concise,
+respectful, and do not invent
 measurements, map boundaries, or satellite results.
+
+Keep normal replies to 2-5 short sentences or at most 100 words. Answer the
+question directly, include only the most useful evidence and next step, and avoid
+repeating the user's question or adding long introductions, summaries, or
+unrequested background. Use a brief list only when it makes the answer clearer.
+Never omit a safety-critical warning or a requested measurement. Expand only
+when the user asks for detail.
 
 Satellite analysis:
 - You have one tool for Sentinel-2 NDVI (vegetation health) and NDMI (canopy/vegetation moisture proxy). Use it when a user asks to analyze a field or location.
-- Use the current-weather tool for live weather requests and the government-schemes tool for scheme names, eligibility, and listed benefits. Do not claim that static scheme information is current application status.
+- Use the current-weather tool for live weather requests.
 - Select the appropriate tool from the user's intent even when they use colloquial Urdu, Hinglish, or an indirect phrasing. If a tool reports a missing location, ask the user for a city/place or coordinates; never invent one.
 - Understand coordinate order from context; the tool needs separate latitude and longitude. For a named address, pass the address as place. Interpret metres as the centre-to-edge distance of a square: a 200 m radius means a 400 m × 400 m square. Acres/hectares specify the exact area and are converted to square dimensions. If the user gives no size, use a 300 m radius, i.e. a 600 m × 600 m square (360,000 m² / 36 hectares), and disclose that assumption.
 - The default date range is the previous two months. Report every available satellite acquisition date separately with that date's NDVI/NDMI mean, scene count, and NDVI-derived health interpretation. Describe NDMI as a vegetation/canopy moisture proxy, not direct soil moisture.
@@ -235,15 +217,15 @@ Satellite analysis:
 Uploaded crop photos:
 - When a crop image is attached, start the first line with the most likely disease/condition and a low/medium/high confidence estimate; do not start with a disclaimer or symptom list.
 - Then use this order: visible symptoms; what to do now/treatment; prevention; what remains uncertain and how to confirm.
+- Keep the complete photo assessment to at most 100 words: one short sentence per section and no repeated points.
 - Give practical, problem-matched steps. For visibly moldy maize, advise against eating or feeding affected grain, separating it from healthy harvest, following local agricultural-extension disposal advice, and keeping unaffected grain dry. Do not imply fungicide cures moldy grain.
 - A photo cannot confirm a disease. Do not claim certainty or prescribe a pesticide/product/dose; recommend local agronomist or diagnostic-lab confirmation as appropriate.
 
-For other agricultural questions, answer helpfully but do not claim access to soil tests, government scheme application status, or data not returned by a tool.
+For other agricultural questions, answer helpfully but do not claim access to soil tests or data not returned by a tool.
 """,
         tools=[
             analyze_satellite_indices,
             check_current_weather,
-            get_government_agricultural_schemes,
         ],
     )
 

@@ -100,6 +100,7 @@ class CropAnalysisInstructionsTests(unittest.TestCase):
         ):
             with self.subTest(language=language):
                 self.assertIn(opening, crop_analysis_instructions(language))
+                self.assertIn("100", crop_analysis_instructions(language))
 
 
 class ProviderRetryConfigTests(unittest.TestCase):

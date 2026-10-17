@@ -7,19 +7,29 @@ import chainlit as cl
 from agents import Agent
 
 from Agents.farmbot_agent import create_farmbot_agent
+from Agents.image_intent_router import (
+    create_combined_field_image_agent,
+    create_image_intent_router_agent,
+    extract_intent_clarification,
+)
+from Agents.planting_suitability_agent import create_planting_suitability_agent
 from config import initialize_earth_engine, setup_gemini, setup_groq, setup_openai
 from services.analysis import FarmBotAnalyzer
-from services.government import GovernmentSchemes
 from services.image_analysis import (
     ImageUploadError,
     crop_analysis_instructions,
     prepare_image_data_urls,
 )
+from services.language import detect_language
 from services.model_routing import ModelProviderRouter, model_http_status
+from services.planting_suitability import (
+    is_planting_suitability_request,
+    planting_suitability_image_instructions,
+)
 from services.weather import WeatherAPI
 
 
-initialize_earth_engine()
+earth_engine_initialized = initialize_earth_engine()
 model_router = ModelProviderRouter(setup_openai(), setup_groq(), setup_gemini())
 logger = logging.getLogger(__name__)
 
@@ -59,17 +69,6 @@ def _groq_fallback_message(language: str) -> str:
         "Ek AI provider ki usage limit poori ho gayi. Ab agla available configured provider use hoga.",
         "ایک AI فراہم کنندہ کی حد پوری ہو گئی ہے۔ اب اگلا دستیاب فعال فراہم کنندہ استعمال ہوگا۔",
     )
-
-
-def _selected_language(message: str) -> str | None:
-    normalized = message.strip().lower()
-    if re.search(r"\b(hinglish|roman urdu|roman hindi)\b", normalized):
-        return "hinglish"
-    if re.search(r"\b(urdu|اردو)\b", normalized) or any("\u0600" <= char <= "\u06ff" for char in normalized):
-        return "urdu"
-    if re.search(r"\b(english|انگریزی)\b", normalized):
-        return "english"
-    return None
 
 
 def _message_coordinates(message: str) -> tuple[float, float] | None:
@@ -169,44 +168,21 @@ def _place_name(message: str, request_type: str) -> str | None:
 @cl.on_chat_start
 async def handle_chat_start():
     cl.user_session.set("history", [])
-    cl.user_session.set("preferred_language", None)
+    cl.user_session.set("preferred_language", "english")
     cl.user_session.set("pending_location_request", None)
     cl.user_session.set("pending_location_radius_m", None)
     cl.user_session.set("pending_location_area", None)
-    await cl.Message(
-        content="Welcome to FarmBot. Which language would you prefer: English, Hinglish, or Urdu?"
-    ).send()
 
 
 @cl.on_message
 async def handle_message(message: cl.Message):
     user_input = message.content.strip()
-    language = cl.user_session.get("preferred_language")
+    language = detect_language(
+        user_input,
+        cl.user_session.get("preferred_language", "english"),
+    )
+    cl.user_session.set("preferred_language", language)
     image_elements = message.elements or []
-
-    if not language:
-        language = _selected_language(user_input)
-        if not language:
-            image_note = (
-                " Please choose a language first, then upload the crop image again."
-                if image_elements else ""
-            )
-            await cl.Message(
-                content=(
-                    "Please choose English, Hinglish, or Urdu so I can set up your chat."
-                    + image_note
-                )
-            ).send()
-            return
-        cl.user_session.set("preferred_language", language)
-        confirmations = {
-            "english": "English selected. Tell me what you would like to analyze.",
-            "hinglish": "Hinglish select ho gayi. Batayein aap kya analyze karwana chahte hain.",
-            "urdu": "اردو منتخب ہو گئی۔ بتائیے آپ کیا تجزیہ کروانا چاہتے ہیں۔",
-        }
-        await cl.Message(content=confirmations[language]).send()
-        if not image_elements:
-            return
 
     lowered = user_input.lower()
 
@@ -217,6 +193,7 @@ async def handle_message(message: cl.Message):
     coordinates = _message_coordinates(user_input)
     pending_request = cl.user_session.get("pending_location_request")
     request_type = _location_request(user_input)
+    planting_suitability_request = is_planting_suitability_request(user_input)
 
     if coordinates and (pending_request or request_type == "choose" or lowered.startswith("my live location:")):
         pending_radius = cl.user_session.get("pending_location_radius_m")
@@ -236,11 +213,19 @@ async def handle_message(message: cl.Message):
     if request_type is None and pending_request:
         request_type = pending_request["intent"] if isinstance(pending_request, dict) else pending_request
 
+    if request_type == "weather":
+        await handle_weather_query(user_input, language, coordinates)
+        return
+
     if request_type == "choose":
         await _ask_for_location(language, "choose")
         return
 
-    if request_type in {"weather", "analysis"} and not coordinates:
+    if (
+        request_type in {"weather", "analysis"}
+        and not coordinates
+        and not planting_suitability_request
+    ):
         place = _place_name(user_input, request_type)
         if not place:
             cl.user_session.set("pending_location_request", {"intent": request_type})
@@ -272,7 +257,12 @@ async def handle_message(message: cl.Message):
 
     history = cl.user_session.get("history", [])
     history.append({"role": "user", "content": user_input})
-    msg = cl.Message(content="")
+    msg = cl.Message(content=_localized(
+        language,
+        "Thinking...",
+        "Soch raha hoon...",
+        "سوچ رہا ہوں...",
+    ))
     await msg.send()
 
     async def announce_groq_fallback():
@@ -283,15 +273,18 @@ async def handle_message(message: cl.Message):
     try:
         streamed_result = model_router.run_streamed(
             input=history,
-            starting_agent=create_farmbot_agent(
+            starting_agent=create_image_intent_router_agent(
                 language,
-                satellite_analysis=run_satellite_analysis_tool,
+                farmbot_agent=create_farmbot_agent(
+                    language,
+                    satellite_analysis=run_satellite_analysis_tool,
+                ),
             ),
             on_fallback=announce_groq_fallback,
         )
         async for event in streamed_result.stream_events():
-            if event.type == "raw_response_event" and hasattr(event.data, "delta"):
-                await msg.stream_token(event.data.delta)
+            if event.type == "raw_response_event":
+                continue
 
         final_output = streamed_result.final_output or _localized(
             language,
@@ -299,6 +292,20 @@ async def handle_message(message: cl.Message):
             "Mujhe jawab generate karne mein problem hui. Sawal thora aur clear likhein.",
             "جواب تیار نہیں ہو سکا۔ براہِ کرم سوال دوبارہ واضح انداز میں لکھیں۔",
         )
+        clarification = extract_intent_clarification(final_output.lstrip())
+        if clarification is not None:
+            cl.user_session.set("pending_field_image_intent", {
+                "question": user_input,
+                "image_data_urls": [],
+                "language": language,
+                "history_recorded": True,
+            })
+            cl.user_session.set("history", history)
+            msg.content = clarification
+            msg.actions = _field_image_intent_actions(language)
+            await msg.update()
+            return
+
         msg.content = final_output
         history.append({"role": "assistant", "content": final_output})
         cl.user_session.set("history", history)
@@ -333,13 +340,11 @@ async def handle_crop_image(message: cl.Message, user_input: str, language: str)
 
     question = user_input or _localized(
         language,
-        "Please assess the visible crop symptoms and possible causes in this image.",
-        "Is image mein fasal ki nazar aane wali alamat aur mumkin wajahen assess karein.",
-        "براہِ کرم تصویر میں فصل کی نظر آنے والی علامات اور ممکنہ وجوہات کا جائزہ لیں۔",
+        "Please assess this field or crop image and tell me what you can determine.",
+        "Is field ya crop ki tasveer dekh kar jo maloom ho sakta hai batayein.",
+        "اس کھیت یا فصل کی تصویر سے جو معلوم ہو سکتا ہے بتائیں۔",
     )
-    image_instruction = crop_analysis_instructions(language)
-    text = f"{image_instruction}\n\nUser question: {question}"
-    content = [{"type": "input_text", "text": text}]
+    content = [{"type": "input_text", "text": question}]
     content.extend(
         {
             "type": "input_image",
@@ -350,7 +355,12 @@ async def handle_crop_image(message: cl.Message, user_input: str, language: str)
     )
 
     history = cl.user_session.get("history", [])
-    msg = cl.Message(content="")
+    msg = cl.Message(content=_localized(
+        language,
+        "Reviewing the image and your question...",
+        "Tasveer aur aapka sawal dekh raha hoon...",
+        "تصویر اور آپ کا سوال دیکھ رہا ہوں...",
+    ))
     await msg.send()
 
     async def announce_groq_fallback():
@@ -361,25 +371,46 @@ async def handle_crop_image(message: cl.Message, user_input: str, language: str)
     try:
         streamed_result = model_router.run_streamed(
             input=history + [{"role": "user", "content": content}],
-            starting_agent=create_farmbot_agent(language),
+            starting_agent=create_image_intent_router_agent(
+                language,
+                farmbot_agent=create_farmbot_agent(language),
+            ),
             on_fallback=announce_groq_fallback,
         )
         async for event in streamed_result.stream_events():
-            if event.type == "raw_response_event" and hasattr(event.data, "delta"):
-                await msg.stream_token(event.data.delta)
+            if event.type == "raw_response_event":
+                continue
 
         final_output = streamed_result.final_output or _localized(
             language,
-            "I couldn't assess the image. Please try a clearer crop photo.",
-            "Image assess nahi ho saki. Kripya crop ki zyada clear photo bhejein.",
-            "تصویر کا جائزہ نہیں ہو سکا۔ براہِ کرم فصل کی زیادہ واضح تصویر بھیجیں۔",
+            "I couldn't assess the image. Please try again with a clear field or crop photo.",
+            "Image assess nahi ho saki. Saaf field ya crop photo ke saath dobara koshish karein.",
+            "تصویر کا جائزہ نہیں ہو سکا۔ براہِ کرم کھیت یا فصل کی واضح تصویر کے ساتھ دوبارہ کوشش کریں۔",
         )
+        clarification = extract_intent_clarification(final_output.lstrip())
+        if clarification is not None:
+            cl.user_session.set("pending_field_image_intent", {
+                "question": question,
+                "image_data_urls": image_data_urls,
+                "language": language,
+                "history_recorded": False,
+            })
+            msg.content = clarification or _localized(
+                language,
+                "What would you like me to check?",
+                "Aap kya check karwana chahte hain?",
+                "آپ کیا چیک کروانا چاہتے ہیں؟",
+            )
+            msg.actions = _field_image_intent_actions(language)
+            await msg.update()
+            return
+
         msg.content = final_output
         history.extend(
             [
                 {
                     "role": "user",
-                    "content": f"[Crop image attached; image available for this turn only] {question}",
+                    "content": f"[Image attached; image available for this turn only] {question}",
                 },
                 {"role": "assistant", "content": final_output},
             ]
@@ -395,6 +426,111 @@ async def handle_crop_image(message: cl.Message, user_input: str, language: str)
                 "I couldn't analyze the image right now. Please try again; if this continues, check your configured AI provider keys and model settings.",
                 "Abhi image analyze nahi ho saki. Dobara koshish karein; masla rahe to configured AI provider keys aur model settings check karein.",
                 "ابھی تصویر کا تجزیہ نہیں ہو سکا۔ دوبارہ کوشش کریں؛ مسئلہ برقرار رہے تو فعال AI فراہم کنندگان کی keys اور model settings چیک کریں۔",
+            )
+    await msg.update()
+
+
+def _field_image_intent_actions(language: str) -> list[cl.Action]:
+    labels = {
+        "english": ("Check crop disease", "Check planting suitability", "Check both"),
+        "hinglish": ("Fasal ki disease check", "Planting suitability check", "Dono check"),
+        "urdu": ("فصل کی بیماری چیک کریں", "کاشت کی موزونیت چیک کریں", "دونوں چیک کریں"),
+    }.get(language, ("Check crop disease", "Check planting suitability", "Check both"))
+    return [
+        cl.Action(
+            name="field_image_intent",
+            payload={"intent": intent},
+            label=label,
+        )
+        for intent, label in zip(("disease", "planting", "both"), labels)
+    ]
+
+
+@cl.action_callback("field_image_intent")
+async def handle_field_image_intent(action: cl.Action):
+    pending = cl.user_session.get("pending_field_image_intent")
+    if not pending:
+        logger.warning("Field image intent selected without a pending image.")
+        await cl.Message(content="Please upload the field image again and ask your question.").send()
+        return
+
+    intent = action.payload.get("intent")
+    language = pending["language"]
+    if intent == "disease":
+        agent = Agent(
+            name="Crop Disease and Symptom Advisor",
+            instructions=crop_analysis_instructions(language),
+        )
+        prompt = crop_analysis_instructions(language)
+    elif intent == "planting":
+        agent = create_planting_suitability_agent(language)
+        prompt = planting_suitability_image_instructions(language)
+    elif intent == "both":
+        agent = create_combined_field_image_agent(language)
+        prompt = (
+            "Assess planting suitability and any clearly visible crop disease only if "
+            "supported by the attached photo. Keep the complete answer under 100 words. "
+            "Do not use a disease template for planting advice."
+        )
+    else:
+        logger.error("Unknown field image intent: %r", intent)
+        await cl.Message(content=_localized(
+            language,
+            "That option was not recognized. Please choose an assessment again.",
+            "Yeh option samajh nahi aaya. Dobara assessment select karein.",
+            "یہ اختیار سمجھ نہیں آیا۔ دوبارہ جائزہ منتخب کریں۔",
+        )).send()
+        return
+
+    image_content = [{"type": "input_text", "text": f"{prompt}\n\nUser question: {pending['question']}"}]
+    image_content.extend(
+        {"type": "input_image", "image_url": data_url, "detail": "high"}
+        for data_url in pending["image_data_urls"]
+    )
+    cl.user_session.set("pending_field_image_intent", None)
+
+    msg = cl.Message(content="")
+    await msg.send()
+
+    async def announce_groq_fallback():
+        await cl.Message(content=_groq_fallback_message(language)).send()
+
+    try:
+        streamed_result = model_router.run_streamed(
+            input=[{"role": "user", "content": image_content}],
+            starting_agent=agent,
+            on_fallback=announce_groq_fallback,
+        )
+        async for event in streamed_result.stream_events():
+            if event.type == "raw_response_event" and hasattr(event.data, "delta"):
+                await msg.stream_token(event.data.delta)
+        msg.content = streamed_result.final_output or _localized(
+            language,
+            "I couldn't complete that assessment. Please try again.",
+            "Yeh assessment complete nahi ho saka. Dobara koshish karein.",
+            "یہ جائزہ مکمل نہیں ہو سکا۔ دوبارہ کوشش کریں۔",
+        )
+        history = cl.user_session.get("history", [])
+        if not pending.get("history_recorded"):
+            history.append({
+                "role": "user",
+                "content": (
+                    f"[Field image attached; available for this turn only] "
+                    f"{pending['question']} ({intent})"
+                ),
+            })
+        history.append({"role": "assistant", "content": msg.content})
+        cl.user_session.set("history", history)
+    except Exception as exc:
+        logger.exception("Selected field image assessment failed")
+        if model_http_status(exc) in (400, 401, 403, 429, 503):
+            msg.content = _model_error_message(language, exc)
+        else:
+            msg.content = _localized(
+                language,
+                "I couldn't analyze the image right now. Please try again.",
+                "Image abhi analyze nahi ho saki. Dobara koshish karein.",
+                "ابھی تصویر کا تجزیہ نہیں ہو سکا۔ دوبارہ کوشش کریں۔",
             )
     await msg.update()
 
@@ -479,7 +615,10 @@ async def _offer_location_actions(
 async def handle_location_action(action: cl.Action):
     payload = action.payload
     coordinates = (float(payload["latitude"]), float(payload["longitude"]))
-    language = payload.get("language", "english")
+    language = cl.user_session.get(
+        "preferred_language",
+        payload.get("language", "english"),
+    )
     choice = payload.get("choice")
     if choice == "weather":
         await handle_weather_query("", language, coordinates)
@@ -534,6 +673,15 @@ async def handle_satellite_analysis(
     date_range: tuple[str, str] | None = None,
     include_weather: bool = True,
 ) -> bool:
+    if not earth_engine_initialized:
+        await cl.Message(content=_localized(
+            language,
+            "Earth Engine is not initialized. Run `earthengine authenticate` in the project environment, confirm you can access the configured Earth Engine project, and restart FarmBot.",
+            "Earth Engine initialize nahi hua. Project environment mein `earthengine authenticate` chalayein, configured Earth Engine project ka access confirm karein, phir FarmBot restart karein.",
+            "Earth Engine شروع نہیں ہوا۔ project environment میں `earthengine authenticate` چلائیں، configured Earth Engine project تک رسائی چیک کریں، پھر FarmBot دوبارہ شروع کریں۔",
+        )).send()
+        return False
+
     if date_range:
         period = f"{date_range[0]} to {date_range[1]}"
         progress_message = _localized(
@@ -723,18 +871,20 @@ async def _generate_satellite_recommendations(point: dict, weather: dict, langua
     report_agent = Agent(
         name="FarmBot Satellite Report Analyst",
         instructions=f"""
-Write detailed, practical agricultural monitoring recommendations in
-{"Roman-script Hinglish" if language == "hinglish" else "English"} using only
-the supplied evidence. Structure the report with: executive summary, observed
-NDVI/NDMI trend and dates, interpretation, actionable field checks, irrigation
-and crop-management guidance, and limitations/next monitoring steps.
+Write concise, practical agricultural monitoring recommendations in {
+            "Roman-script Urdu/Hindi" if language == "hinglish"
+            else "Urdu script" if language == "urdu"
+            else "English"
+        } using only the supplied evidence. Keep recommendations under 100 words.
+State the main interpretation, one or two useful field checks, and the next step;
+omit long introductions, repetition, and general background.
 NDVI describes vegetation greenness, not a definitive diagnosis. NDMI is a
 vegetation/canopy moisture proxy, not a direct soil-moisture sensor. Provided weather
 is a current observation only; do not associate it with historical satellite
 dates. Do not infer crop type, growth stage, disease, fertilizer deficiency,
 or causation when not provided. Tie each claim to the reported values/dates,
 and mark recommendations as general where farm-specific evidence is missing.
-Keep the output detailed but suitable for a professional downloadable report.
+Keep the output concise and suitable for a professional downloadable report.
 """,
     )
     result = await model_router.run(
@@ -744,45 +894,6 @@ Keep the output detailed but suitable for a professional downloadable report.
     if not isinstance(result.final_output, str) or not result.final_output.strip():
         raise ValueError("AI report generation returned no recommendations.")
     return result.final_output.strip()
-
-
-async def handle_government_schemes(user_input: str, language: str):
-    """Handle government scheme queries."""
-    scheme_name = next(
-        (name for name in GovernmentSchemes.SCHEMES if name.lower() in user_input.lower()),
-        None,
-    )
-    scheme_info = GovernmentSchemes.get_scheme_info(scheme_name, language)
-
-    if "error" in scheme_info:
-        prefix = (
-            "معذرت، کوئی اسکیم نہیں ملی۔ دستیاب اسکیمیں:"
-            if language == "urdu"
-            else "Sorry, no scheme found. Available schemes are:"
-        )
-        await cl.Message(
-            content=prefix + "\n" + "\n".join(f"- {name}" for name in GovernmentSchemes.SCHEMES)
-        ).send()
-        return
-
-    if scheme_name:
-        if language == "urdu":
-            response = (
-                f"**{scheme_name}**\n\nتفصیل: {scheme_info['description']}\n"
-                f"اہلیت: {scheme_info['eligibility']}\nفوائد: {scheme_info['benefits']}"
-            )
-        else:
-            response = (
-                f"**{scheme_name}**\n\nDescription: {scheme_info['description']}\n"
-                f"Eligibility: {scheme_info['eligibility']}\nBenefits: {scheme_info['benefits']}"
-            )
-    else:
-        title = "پاکستانی سرکاری زرعی اسکیمیں" if language == "urdu" else "Pakistani Government Farming Schemes"
-        response = f"**{title}**\n\n" + "\n\n".join(
-            f"**{name}**\n{details['description']}"
-            for name, details in scheme_info.items()
-        )
-    await cl.Message(content=response).send()
 
 
 async def handle_weather_query(

@@ -17,3 +17,5 @@ venv312/
 !/.chainlit/config.toml
 chainlit.md
 generated/
+
+.venv
