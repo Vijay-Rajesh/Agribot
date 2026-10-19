@@ -19,3 +19,4 @@ chainlit.md
 generated/
 
 .venv
+.files

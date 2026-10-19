@@ -99,8 +99,17 @@ class CropAnalysisInstructionsTests(unittest.TestCase):
             ("urdu", "پہلی سطر '**زیادہ ممکنہ بیماری/مسئلہ:"),
         ):
             with self.subTest(language=language):
-                self.assertIn(opening, crop_analysis_instructions(language))
-                self.assertIn("100", crop_analysis_instructions(language))
+                instructions = crop_analysis_instructions(language)
+                self.assertIn(opening, instructions)
+                self.assertIn("100", instructions)
+                self.assertIn(
+                    {
+                        "english": "do not invent symptoms or a diagnosis",
+                        "hinglish": "alamat ya diagnosis invent na karein",
+                        "urdu": "علامات یا تشخیص خود سے نہ بنائیں",
+                    }[language],
+                    instructions,
+                )
 
 
 class ProviderRetryConfigTests(unittest.TestCase):
