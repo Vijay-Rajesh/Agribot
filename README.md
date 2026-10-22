@@ -11,14 +11,9 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-Add at least one AI provider key to a root `.env` file before starting the app:
-
-```dotenv
-OPENAI_API_KEY=your-openai-api-key
-```
-
-Alternatively, configure `GROQ_API_KEY` or `GEMINI_API_KEY`. Keep `.env` private
-and never paste API keys into chat or commit them to the repository.
+Copy [`.env.example`](./.env.example) to `.env` and set the keys you use.
+WhatsApp and Chainlit run in the same application by default (`APP_SERVICE=all`).
+Keep `.env` private and never paste API keys into chat or commit them.
 
 Start the app from the repository root:
 
@@ -26,16 +21,14 @@ Start the app from the repository root:
 chainlit run src\gis_agent\main.py -w --port 8000
 ```
 
-Open [http://localhost:8000](http://localhost:8000) in a browser. The
-Earth Engine analysis features also require Earth Engine authentication. In a
-separate PowerShell window, authenticate using the project's virtual environment:
-
-```powershell
-.\.venv\Scripts\earthengine.exe authenticate
-```
-
-Complete the browser sign-in with an account that has access to the configured
-Earth Engine project (`ee-ewe111vijay`), then restart FarmBot.
+Open [http://localhost:8000](http://localhost:8000) for Chainlit. The same
+server also exposes the WhatsApp webhook at `/webhook` and a health check at
+`/healthz`; readiness returns HTTP `503` and names any missing required
+WhatsApp settings. Set `PORT` to use a different port.
+For local satellite-analysis testing, authenticate Earth Engine in the active
+virtual environment with
+`.\.venv\Scripts\earthengine.exe authenticate`, then sign in with an account
+that has access to project `ee-ewe111vijay`.
 
 AI provider priority:
 
@@ -64,15 +57,12 @@ service.
 
 ## WhatsApp Cloud API
 
-WhatsApp runs as a separate Flask webhook process. It does not replace or
-remove Chainlit; both interfaces use the existing FarmBot agents and services
-and can run at the same time.
-
-Add these Meta WhatsApp Cloud API values to the root `.env` file. Keep the
-access token and app secret private:
+The WhatsApp webhook and Chainlit UI are served by one application process,
+using the same agents, OpenAI key, and deployment environment. Configure these
+Meta values in the same root `.env` file or deployment environment:
 
 ```dotenv
-VERIFY_TOKEN=choose-a-private-webhook-verification-token
+VERIFY_TOKEN=your-private-webhook-verification-token
 META_APP_SECRET=your-meta-app-secret
 WHATSAPP_ACCESS_TOKEN=your-whatsapp-cloud-api-access-token
 WHATSAPP_PHONE_NUMBER_ID=your-meta-phone-number-id
@@ -80,41 +70,33 @@ WHATSAPP_API_VERSION=v26.0
 WHATSAPP_DATABASE_PATH=.files/whatsapp.sqlite3
 ```
 
-Install/update the project dependencies, then start the webhook from the
-repository root in a separate terminal:
-
-```powershell
-python -m pip install -e .
-agribot-whatsapp
-```
-
-The local webhook listens on port `5000` by default; set `PORT` to change it.
-Configure the Meta webhook callback as your publicly reachable HTTPS URL ending
+`META_APP_SECRET` is required for signed webhook events; the webhook returns
+`503` for POST requests until it is configured. `SKIP_RAG_STARTUP` is an
+obsolete setting (this project has no RAG subsystem) and can be removed.
+Configure Meta's callback as the same deployment's public HTTPS URL ending
 in `/webhook`, use the same `VERIFY_TOKEN`, and subscribe the WhatsApp
-Business Account to the `messages` field. Meta needs an HTTPS endpoint; for
-local testing, expose port 5000 through a secure tunnel. The webhook verifies
-Meta's `X-Hub-Signature-256` using `META_APP_SECRET` and ignores duplicate
-message deliveries.
+Business Account to the `messages` field. Meta requires HTTPS; for local
+testing, expose the app's port 8000 through a secure tunnel. The webhook
+verifies Meta's `X-Hub-Signature-256` using `META_APP_SECRET`, optionally
+filters events by `WHATSAPP_BUSINESS_ACCOUNT_ID`, and ignores duplicate
+message deliveries. `ACCESS_TOKEN`, `PHONE_NUMBER_ID`, and
+`BUSINESS_ACCOUNT_ID` are accepted as legacy aliases.
 
 The WhatsApp bot supports text chat, crop-image uploads (downloaded from Meta
 and passed to the existing image-aware agent), shared location, and interactive
 location choices for satellite analysis, weather, or both. Conversation history
 and pending image/location choices are stored in the ignored
-`.files/whatsapp.sqlite3` database. Earth Engine analysis still requires the
-project's Earth Engine authentication. Replies are sent inside the user's
+`.files/whatsapp.sqlite3` database; mount persistent storage there in
+production. Earth Engine analysis still requires credentials for the configured
+project. Replies are sent inside the user's
 WhatsApp conversation window; outbound template messages are not implemented.
-
-Keep Chainlit running with its existing command when you also want the browser
-app. For production, serve `gis_agent.whatsapp:app` behind a production WSGI
-server and HTTPS reverse proxy rather than using Flask's built-in development
-server.
 
 ## Docker image and CI/CD
 
-The Docker image can run the Chainlit browser app or the WhatsApp webhook,
-selected with `APP_SERVICE` (`chainlit` by default, or `whatsapp`). It runs one
-service per container so Railway can give each service its own public HTTPS
-domain and `PORT`.
+The Docker image defaults to `APP_SERVICE=all`, running both Chainlit and the
+WhatsApp webhook on the same port and public HTTPS domain. `APP_SERVICE=chainlit`
+and `APP_SERVICE=whatsapp` remain available for optional single-interface
+deployments.
 
 The GitHub Actions workflow at
 [`.github/workflows/docker-publish.yml`](./.github/workflows/docker-publish.yml)
@@ -137,35 +119,20 @@ To build and run locally:
 
 ```powershell
 docker build -t ghcr.io/vijay-rajesh/agribot:latest .
-docker run --rm -p 8000:8000 -e OPENAI_API_KEY=your-key ghcr.io/vijay-rajesh/agribot:latest
-docker run --rm -p 5000:5000 -e APP_SERVICE=whatsapp -e VERIFY_TOKEN=your-token -e META_APP_SECRET=your-secret -e WHATSAPP_ACCESS_TOKEN=your-access-token -e WHATSAPP_PHONE_NUMBER_ID=your-phone-id ghcr.io/vijay-rajesh/agribot:latest
+docker run --rm -p 8000:8000 --env-file .env ghcr.io/vijay-rajesh/agribot:latest
 ```
 
-Set AI provider keys (`OPENAI_API_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY`)
-as deployment environment variables, not in the image. To run both interfaces
-on Railway, create two services from the same image:
+Deploy one container/service and add all required variables to that service:
+`OPENAI_API_KEY`, `VERIFY_TOKEN`, `META_APP_SECRET`,
+`WHATSAPP_ACCESS_TOKEN`, and `WHATSAPP_PHONE_NUMBER_ID`. Add
+`WEATHER_API_KEY` for weather responses and the optional fallback provider
+keys if desired. Set Meta's callback to `https://<your-domain>/webhook` and
+subscribe to `messages`. Attach persistent storage at `/app/.files` if WhatsApp
+conversation history must survive restarts. Do not bake `.env` or credentials
+into the Docker image.
 
-1. **Chainlit service:** `APP_SERVICE=chainlit`; expose its Railway-generated
-   public domain.
-2. **WhatsApp service:** `APP_SERVICE=whatsapp`; expose its own Railway
-   generated public domain and add `VERIFY_TOKEN`, `META_APP_SECRET`,
-   `WHATSAPP_ACCESS_TOKEN`, and `WHATSAPP_PHONE_NUMBER_ID`. Configure the Meta
-   callback URL as `https://<whatsapp-domain>/webhook`, subscribe to `messages`,
-   and use the same `VERIFY_TOKEN` in Meta and Railway.
-
-Add the AI provider keys to both services if both should answer messages.
-Set `WEATHER_API_KEY` on either service that needs weather responses. Attach a
-Railway persistent volume at `/app/.files` to the WhatsApp service to retain
-conversation history across restarts. Earth Engine analysis also needs
-Earth Engine credentials and project access; configure those separately when
-enabling that feature in production.
-
-For a local run, the default `chainlit` service listens on port 8000. Start the
-WhatsApp service in a second container with `APP_SERVICE=whatsapp` and map
-port 5000; configure the WhatsApp webhook against a publicly reachable HTTPS
-URL.
-
-For the simplest first deployment, Railway can deploy the GHCR image and
-provide a `PORT` to each service; DigitalOcean App Platform can also deploy
-both container services. Configure GHCR access if the package is private, and
-add each service's required environment variables there.
+Earth Engine is the remaining external setup: provide credentials with access
+to project `ee-ewe111vijay` in the same deployment (for example, mount a
+service-account credentials file and set `GOOGLE_APPLICATION_CREDENTIALS`).
+The UI and webhook can deploy together, but satellite analysis will remain
+unavailable until Earth Engine credentials and project access are configured.

@@ -7,11 +7,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 from whatsapp import (
     WhatsAppBot,
     WhatsAppStore,
     _valid_meta_signature,
     create_app,
+    create_fastapi_router,
+    register_fastapi_routes,
 )
 
 
@@ -60,10 +65,16 @@ class WhatsAppWebhookTests(unittest.TestCase):
         self.app = create_app(
             verify_token="verify-me",
             app_secret="app-secret",
+            access_token="test-token",
+            phone_number_id="test-phone-id",
+            business_account_id="",
             adapter=self.adapter,
             executor=ImmediateExecutor(),
         )
         self.client = self.app.test_client()
+        asgi_app = FastAPI()
+        asgi_app.include_router(create_fastapi_router(self.app))
+        self.asgi_client = TestClient(asgi_app)
 
     def test_meta_get_verification_returns_challenge(self):
         response = self.client.get(
@@ -77,6 +88,98 @@ class WhatsAppWebhookTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_data(as_text=True), "challenge-123")
+
+    def test_asgi_router_serves_health_and_meta_verification(self):
+        self.assertEqual(self.asgi_client.get("/healthz").json(), {"status": "ok"})
+        response = self.asgi_client.get(
+            "/webhook",
+            params={
+                "hub.mode": "subscribe",
+                "hub.verify_token": "verify-me",
+                "hub.challenge": "challenge-456",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, "challenge-456")
+
+    def test_health_reports_missing_whatsapp_configuration(self):
+        app = create_app(
+            verify_token="verify-me",
+            app_secret="",
+            access_token="",
+            phone_number_id="",
+            business_account_id="",
+            adapter=self.adapter,
+            executor=ImmediateExecutor(),
+        )
+        asgi_app = FastAPI()
+        register_fastapi_routes(asgi_app, app)
+        asgi_client = TestClient(asgi_app)
+
+        response = asgi_client.get("/healthz")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json()["missing_configuration"],
+            [
+                "META_APP_SECRET",
+                "WHATSAPP_ACCESS_TOKEN",
+                "WHATSAPP_PHONE_NUMBER_ID",
+            ],
+        )
+
+    def test_webhook_routes_precede_chainlit_catch_all(self):
+        asgi_app = FastAPI()
+
+        @asgi_app.get("/{full_path:path}")
+        async def chainlit_fallback(full_path: str):
+            return {"fallback": full_path}
+
+        register_fastapi_routes(asgi_app, self.app)
+
+        response = TestClient(asgi_app).get(
+            "/webhook",
+            params={
+                "hub.mode": "subscribe",
+                "hub.verify_token": "verify-me",
+                "hub.challenge": "challenge-789",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, "challenge-789")
+
+    def test_asgi_router_validates_signature_and_processes_message(self):
+        body = json.dumps({
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "changes": [{
+                    "value": {
+                        "messages": [{
+                            "id": "wamid.asgi-test",
+                            "from": "15551234567",
+                            "type": "text",
+                            "text": {"body": "hello"},
+                        }],
+                    },
+                }],
+            }],
+        }).encode()
+        signature = hmac.new(b"app-secret", body, hashlib.sha256).hexdigest()
+
+        response = self.asgi_client.post(
+            "/webhook",
+            content=body,
+            headers={
+                "X-Hub-Signature-256": f"sha256={signature}",
+                "Content-Type": "application/json",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, "EVENT_RECEIVED")
+        self.assertEqual(len(self.adapter.messages), 1)
 
     def test_post_requires_valid_signature_and_deduplicates_messages(self):
         body = json.dumps({
@@ -149,6 +252,40 @@ class WhatsAppWebhookTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.adapter.messages, [])
 
+    def test_ignores_events_for_another_business_account(self):
+        app = create_app(
+            app_secret="app-secret",
+            business_account_id="expected-business-id",
+            adapter=self.adapter,
+            executor=ImmediateExecutor(),
+        )
+        body = json.dumps({
+            "entry": [{
+                "id": "unexpected-business-id",
+                "changes": [{
+                    "value": {
+                        "messages": [{
+                            "id": "wamid.wrong-business",
+                            "from": "15551234567",
+                            "type": "text",
+                            "text": {"body": "hello"},
+                        }],
+                    },
+                }],
+            }],
+        }).encode()
+        signature = hmac.new(b"app-secret", body, hashlib.sha256).hexdigest()
+
+        response = app.test_client().post(
+            "/webhook",
+            data=body,
+            headers={"X-Hub-Signature-256": f"sha256={signature}"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.adapter.messages, [])
+
     def test_requeues_received_messages_after_webhook_restart(self):
         message = {
             "id": "wamid.recovery",
@@ -175,6 +312,61 @@ class WhatsAppBotTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.store = WhatsAppStore(Path(self.temp_dir.name) / "whatsapp.sqlite3")
+
+    def test_openai_is_the_primary_whatsapp_provider(self):
+        openai_config = object()
+        with (
+            patch("whatsapp.setup_openai", return_value=openai_config),
+            patch("whatsapp.setup_groq", return_value=object()),
+            patch("whatsapp.setup_gemini", return_value=object()),
+        ):
+            bot = WhatsAppBot(
+                store=self.store,
+                access_token="test-token",
+                phone_number_id="phone-id",
+                api_version="v26.0",
+            )
+            router = bot._get_model_router()
+
+        self.assertIs(router._primary_config()[0], openai_config)
+
+    def test_outbound_api_requests_use_the_configured_bearer_token(self):
+        bot = WhatsAppBot(
+            store=self.store,
+            access_token="test-token",
+            phone_number_id="phone-id",
+            api_version="v26.0",
+        )
+        response = Mock()
+        with patch("whatsapp.requests.post", return_value=response) as post:
+            bot._send_api_request({"to": "15551234567", "type": "text"})
+
+        self.assertEqual(
+            post.call_args.kwargs["headers"]["Authorization"],
+            "Bearer test-token",
+        )
+        response.raise_for_status.assert_called_once_with()
+
+    def test_legacy_whatsapp_environment_names_are_supported(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            "os.environ",
+            {
+                "ACCESS_TOKEN": "legacy-token",
+                "PHONE_NUMBER_ID": "legacy-phone-id",
+                "BUSINESS_ACCOUNT_ID": "legacy-business-id",
+            },
+            clear=True,
+        ):
+            app = create_app(database_path=Path(temp_dir) / "legacy.sqlite3")
+
+        adapter = app.extensions["whatsapp_adapter"]
+        self.assertEqual(adapter.access_token, "legacy-token")
+        self.assertEqual(adapter.phone_number_id, "legacy-phone-id")
+        self.assertEqual(
+            app.config["WHATSAPP_BUSINESS_ACCOUNT_ID"],
+            "legacy-business-id",
+        )
+        app.extensions["whatsapp_executor"].shutdown(wait=False)
 
     def test_greeting_has_short_reply_without_calling_agent(self):
         model_router = Mock()

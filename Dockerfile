@@ -11,7 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY --from=uv /uv /uvx /bin/
-COPY pyproject.toml uv.lock README.md chainlit.md ./
+COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 COPY public ./public
 COPY .chainlit/config.toml ./.chainlit/config.toml
@@ -24,6 +24,6 @@ RUN useradd --create-home --uid 10001 appuser \
 
 USER appuser
 
-EXPOSE 8000 5000
+EXPOSE 8000
 
 CMD ["python", "-m", "gis_agent.container"]

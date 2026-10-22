@@ -100,5 +100,5 @@ def setup_gemini():
     return _model_run_config(
         api_key,
         "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "gemini-3.8-flash",
+        os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
     )

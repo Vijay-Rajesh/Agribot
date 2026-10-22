@@ -1,26 +1,2 @@
-# Core dependencies
-chainlit
-openai
-python-dotenv
-requests
-flask>=3.1.0
-gunicorn>=23.0.0
-
-# Earth Engine
-earthengine-api
-
-# Plotting
-matplotlib
-numpy
-
-# PDF generation
-reportlab
-
-# For typing (optional but nice)
-typing-extensions
-
-# If you're using Google Gemini via OpenAI-compatible API
-# Add the Gemini-compatible library here (e.g., together, groq, etc.)
-
-# Streamlit version (if converting)
-streamlit
+# Keep pyproject.toml as the single source of dependency versions.
+-e .

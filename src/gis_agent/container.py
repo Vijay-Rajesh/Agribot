@@ -2,6 +2,11 @@ import os
 from pathlib import Path
 import sys
 
+from dotenv import find_dotenv, load_dotenv
+
+
+load_dotenv(find_dotenv())
+
 
 def _whatsapp_wsgi_command(port: str) -> list[str]:
     return [
@@ -23,9 +28,9 @@ def _whatsapp_wsgi_command(port: str) -> list[str]:
 
 
 def main() -> None:
-    service = os.getenv("APP_SERVICE", "chainlit").strip().lower() or "chainlit"
+    service = os.getenv("APP_SERVICE", "all").strip().lower() or "all"
 
-    if service == "chainlit":
+    if service in {"all", "chainlit"}:
         command = [
             sys.executable,
             "-m",
@@ -56,7 +61,7 @@ def main() -> None:
         os.execv(sys.executable, command)
         return
 
-    raise SystemExit("APP_SERVICE must be either 'chainlit' or 'whatsapp'.")
+    raise SystemExit("APP_SERVICE must be 'all', 'chainlit', or 'whatsapp'.")
 
 
 if __name__ == "__main__":

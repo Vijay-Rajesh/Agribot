@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import os
 import re
 
 import chainlit as cl
@@ -32,6 +33,12 @@ from services.weather import WeatherAPI
 earth_engine_initialized = initialize_earth_engine()
 model_router = ModelProviderRouter(setup_openai(), setup_groq(), setup_gemini())
 logger = logging.getLogger(__name__)
+
+if os.getenv("APP_SERVICE", "all").strip().lower() in {"", "all"}:
+    from chainlit.server import app as chainlit_app
+    from whatsapp import app as whatsapp_flask_app, register_fastapi_routes
+
+    register_fastapi_routes(chainlit_app, whatsapp_flask_app)
 
 
 def _temporary_model_error_message(language: str) -> str:

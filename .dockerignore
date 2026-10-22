@@ -9,6 +9,8 @@ __pycache__
 .env
 .env.*
 .files
+**/.files/
+/src/gis_agent/chat_history.json
 .chainlit/*
 !.chainlit/config.toml
 build

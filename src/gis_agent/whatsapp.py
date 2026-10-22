@@ -19,8 +19,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 from dotenv import find_dotenv, load_dotenv
+from fastapi import APIRouter, FastAPI, Request
 from flask import Flask, Response, request
 import requests
+from starlette.responses import JSONResponse, Response as ASGIResponse
 from agents import Agent
 
 
@@ -92,6 +94,87 @@ def _valid_meta_signature(raw_body: bytes, signature: str | None, app_secret: st
         hashlib.sha256,
     ).hexdigest()
     return hmac.compare_digest(signature[7:], expected)
+
+
+def _verify_webhook(
+    mode: str | None,
+    supplied_token: str | None,
+    challenge: str | None,
+    verify_token: str,
+) -> tuple[str, int]:
+    if not verify_token:
+        return "Webhook verification is not configured.", 503
+    if mode == "subscribe" and hmac.compare_digest(supplied_token or "", verify_token):
+        return challenge or "", 200
+    return "Verification failed.", 403
+
+
+def _missing_whatsapp_config(
+    verify_token: str,
+    app_secret: str,
+    access_token: str,
+    phone_number_id: str,
+) -> list[str]:
+    return [
+        name
+        for name, value in (
+            ("VERIFY_TOKEN", verify_token),
+            ("META_APP_SECRET", app_secret),
+            ("WHATSAPP_ACCESS_TOKEN", access_token),
+            ("WHATSAPP_PHONE_NUMBER_ID", phone_number_id),
+        )
+        if not value
+    ]
+
+
+def _receive_webhook(
+    raw_body: bytes,
+    signature: str | None,
+    *,
+    app_secret: str,
+    business_account_id: str,
+    store: WhatsAppStore,
+    adapter: WhatsAppBot,
+    executor: ThreadPoolExecutor,
+) -> tuple[str, int]:
+    if not app_secret:
+        return "Webhook signature verification is not configured.", 503
+    if not _valid_meta_signature(raw_body, signature, app_secret):
+        return "Invalid webhook signature.", 403
+    try:
+        payload = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return "Invalid JSON payload.", 400
+    if not isinstance(payload, dict):
+        return "Invalid JSON payload.", 400
+
+    entries = payload.get("entry", [])
+    if not isinstance(entries, list):
+        return "Invalid JSON payload.", 400
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if business_account_id and entry.get("id") != business_account_id:
+            logger.warning("Ignoring WhatsApp webhook event for an unexpected business account.")
+            continue
+        changes = entry.get("changes", [])
+        if not isinstance(changes, list):
+            continue
+        for change in changes:
+            value = change.get("value", {}) if isinstance(change, dict) else {}
+            messages = value.get("messages", []) if isinstance(value, dict) else []
+            if not isinstance(messages, list):
+                continue
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                message_id = message.get("id")
+                if not isinstance(message_id, str) or not message_id:
+                    logger.warning("Ignoring WhatsApp message without an ID.")
+                    continue
+                if store.claim_webhook_message(message_id, message):
+                    executor.submit(_process_webhook_message, adapter, store, message)
+    return "EVENT_RECEIVED", 200
 
 
 class WhatsAppStore:
@@ -826,6 +909,7 @@ def create_app(
     app_secret: str | None = None,
     access_token: str | None = None,
     phone_number_id: str | None = None,
+    business_account_id: str | None = None,
     api_version: str | None = None,
     database_path: str | Path | None = None,
     adapter: WhatsAppBot | None = None,
@@ -836,12 +920,26 @@ def create_app(
     access_token = (
         access_token
         if access_token is not None
-        else os.getenv("WHATSAPP_ACCESS_TOKEN", os.getenv("ACCESS_TOKEN", "")).strip()
+        else (
+            os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
+            or os.getenv("ACCESS_TOKEN", "").strip()
+        )
     )
     phone_number_id = (
         phone_number_id
         if phone_number_id is not None
-        else os.getenv("WHATSAPP_PHONE_NUMBER_ID", os.getenv("PHONE_NUMBER_ID", "")).strip()
+        else (
+            os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
+            or os.getenv("PHONE_NUMBER_ID", "").strip()
+        )
+    )
+    business_account_id = (
+        business_account_id
+        if business_account_id is not None
+        else (
+            os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "").strip()
+            or os.getenv("BUSINESS_ACCOUNT_ID", "").strip()
+        )
     )
     api_version = (
         api_version
@@ -869,51 +967,49 @@ def create_app(
     app.extensions["whatsapp_adapter"] = adapter
     app.extensions["whatsapp_store"] = store
     app.extensions["whatsapp_executor"] = executor
+    app.config["WHATSAPP_VERIFY_TOKEN"] = verify_token
+    app.config["WHATSAPP_APP_SECRET"] = app_secret
+    app.config["WHATSAPP_BUSINESS_ACCOUNT_ID"] = business_account_id
+    app.config["WHATSAPP_MISSING_CONFIG"] = _missing_whatsapp_config(
+        verify_token,
+        app_secret,
+        access_token,
+        phone_number_id,
+    )
 
     @app.get("/")
     def health() -> Response:
+        missing = app.config["WHATSAPP_MISSING_CONFIG"]
+        if missing:
+            return Response(
+                f"WhatsApp configuration is incomplete: {', '.join(missing)}",
+                status=503,
+                mimetype="text/plain",
+            )
         return Response("FarmBot WhatsApp webhook is running.", status=200, mimetype="text/plain")
 
     @app.get("/webhook")
     def verify_webhook() -> Response:
-        if not verify_token:
-            return Response("Webhook verification is not configured.", status=503)
-        if (
-            request.args.get("hub.mode") == "subscribe"
-            and hmac.compare_digest(request.args.get("hub.verify_token", ""), verify_token)
-        ):
-            return Response(request.args.get("hub.challenge", ""), status=200)
-        return Response("Verification failed.", status=403)
+        body, status = _verify_webhook(
+            request.args.get("hub.mode"),
+            request.args.get("hub.verify_token"),
+            request.args.get("hub.challenge"),
+            verify_token,
+        )
+        return Response(body, status=status, mimetype="text/plain")
 
     @app.post("/webhook")
     def receive_webhook() -> Response:
-        if not app_secret:
-            return Response("Webhook signature verification is not configured.", status=503)
-        if not _valid_meta_signature(
+        body, status = _receive_webhook(
             request.get_data(),
             request.headers.get("X-Hub-Signature-256"),
-            app_secret,
-        ):
-            return Response("Invalid webhook signature.", status=403)
-        payload = request.get_json(silent=True)
-        if not isinstance(payload, dict):
-            return Response("Invalid JSON payload.", status=400)
-
-        for entry in payload.get("entry", []):
-            if not isinstance(entry, dict):
-                continue
-            for change in entry.get("changes", []):
-                value = change.get("value", {}) if isinstance(change, dict) else {}
-                for message in value.get("messages", []) if isinstance(value, dict) else []:
-                    if not isinstance(message, dict):
-                        continue
-                    message_id = message.get("id")
-                    if not isinstance(message_id, str) or not message_id:
-                        logger.warning("Ignoring WhatsApp message without an ID.")
-                        continue
-                    if store.claim_webhook_message(message_id, message):
-                        executor.submit(_process_webhook_message, adapter, store, message)
-        return Response("EVENT_RECEIVED", status=200)
+            app_secret=app_secret,
+            business_account_id=business_account_id,
+            store=store,
+            adapter=adapter,
+            executor=executor,
+        )
+        return Response(body, status=status, mimetype="text/plain")
 
     for queued_message in store.queued_webhook_messages():
         executor.submit(
@@ -924,6 +1020,69 @@ def create_app(
         )
 
     return app
+
+
+def create_fastapi_router(flask_app: Flask) -> APIRouter:
+    """Expose the WhatsApp webhook on the same ASGI server as Chainlit."""
+    router = APIRouter()
+    store = flask_app.extensions["whatsapp_store"]
+    adapter = flask_app.extensions["whatsapp_adapter"]
+    executor = flask_app.extensions["whatsapp_executor"]
+    verify_token = flask_app.config["WHATSAPP_VERIFY_TOKEN"]
+    app_secret = flask_app.config["WHATSAPP_APP_SECRET"]
+    business_account_id = flask_app.config["WHATSAPP_BUSINESS_ACCOUNT_ID"]
+
+    @router.get("/healthz")
+    async def health_check():
+        missing = flask_app.config["WHATSAPP_MISSING_CONFIG"]
+        if missing:
+            return JSONResponse(
+                {"status": "degraded", "missing_configuration": missing},
+                status_code=503,
+            )
+        return {"status": "ok"}
+
+    @router.get("/webhook")
+    async def verify_webhook(request: Request):
+        body, status = _verify_webhook(
+            request.query_params.get("hub.mode"),
+            request.query_params.get("hub.verify_token"),
+            request.query_params.get("hub.challenge"),
+            verify_token,
+        )
+        return ASGIResponse(body, status_code=status, media_type="text/plain")
+
+    @router.post("/webhook")
+    async def receive_webhook(request: Request):
+        body, status = _receive_webhook(
+            await request.body(),
+            request.headers.get("X-Hub-Signature-256"),
+            app_secret=app_secret,
+            business_account_id=business_account_id,
+            store=store,
+            adapter=adapter,
+            executor=executor,
+        )
+        return ASGIResponse(body, status_code=status, media_type="text/plain")
+
+    return router
+
+
+def register_fastapi_routes(asgi_app: FastAPI, flask_app: Flask) -> None:
+    if getattr(asgi_app.state, "whatsapp_routes_registered", False):
+        return
+    routes = create_fastapi_router(flask_app).routes
+    app_routes = asgi_app.router.routes
+    catch_all_index = next(
+        (
+            index
+            for index, route in enumerate(app_routes)
+            if getattr(route, "path", None) == "/{full_path:path}"
+        ),
+        len(app_routes),
+    )
+    app_routes[catch_all_index:catch_all_index] = routes
+    asgi_app.state.whatsapp_routes_registered = True
 
 
 def run() -> None:

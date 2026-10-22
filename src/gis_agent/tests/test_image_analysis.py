@@ -144,9 +144,13 @@ class ProviderRetryConfigTests(unittest.TestCase):
         )
 
     def test_run_config_retries_transient_model_failures(self):
-        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}):
+        with patch.dict(
+            "os.environ",
+            {"GEMINI_API_KEY": "test-key", "GEMINI_MODEL": "gemini-test-model"},
+        ):
             run_config = setup_gemini()
 
+        self.assertEqual(run_config.model.model, "gemini-test-model")
         retry = run_config.model_settings.retry
         self.assertEqual(retry.max_retries, 3)
         self.assertEqual(retry.backoff.initial_delay, 1)

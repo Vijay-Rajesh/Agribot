@@ -20,3 +20,4 @@ generated/
 
 .venv
 .files
+/src/gis_agent/chat_history.json
