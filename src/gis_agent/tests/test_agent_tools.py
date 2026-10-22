@@ -120,5 +120,37 @@ class FarmBotNaturalLanguageToolTests(unittest.IsolatedAsyncioTestCase):
             end_date="2026-02-01",
         )
 
+    async def test_satellite_tool_includes_summary_returned_by_non_chat_adapter(self):
+        satellite_analysis = AsyncMock(return_value={
+            "average_ndvi": 0.72,
+            "average_ndmi": 0.31,
+        })
+        tools = {
+            tool.name: tool
+            for tool in create_farmbot_agent(
+                "english",
+                satellite_analysis=satellite_analysis,
+            ).tools
+        }
+        serialized_arguments = json.dumps({"latitude": 31.5, "longitude": 74.3})
+        context = ToolContext(
+            context=None,
+            tool_name="analyze_satellite_indices",
+            tool_call_id="test-call",
+            tool_arguments=serialized_arguments,
+        )
+
+        result = json.loads(
+            await tools["analyze_satellite_indices"].on_invoke_tool(
+                context,
+                serialized_arguments,
+            )
+        )
+
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["analysis"]["average_ndvi"], 0.72)
+        self.assertEqual(result["analysis"]["average_ndmi"], 0.31)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,7 @@ from config import setup_gemini, setup_groq, setup_openai
 from services.image_analysis import (
     ImageUploadError,
     crop_analysis_instructions,
+    prepare_image_bytes_data_url,
     prepare_image_data_urls,
 )
 
@@ -34,6 +35,18 @@ class PrepareImageDataUrlsTests(unittest.TestCase):
         with Image.open(io.BytesIO(image_bytes)) as image:
             self.assertEqual(image.format, "JPEG")
             self.assertEqual(image.size, (1600, 873))
+
+    def test_prepares_validated_image_bytes_for_whatsapp_media(self):
+        image_buffer = io.BytesIO()
+        Image.new("RGB", (200, 100), color="green").save(image_buffer, format="PNG")
+
+        data_url = prepare_image_bytes_data_url(image_buffer.getvalue())
+
+        self.assertTrue(data_url.startswith("data:image/jpeg;base64,"))
+
+    def test_rejects_invalid_image_bytes(self):
+        with self.assertRaises(ImageUploadError):
+            prepare_image_bytes_data_url(b"not an image")
 
     def test_rejects_non_image_upload(self):
         element = SimpleNamespace(type="file", path=str(self.image_path))
@@ -117,7 +130,7 @@ class ProviderRetryConfigTests(unittest.TestCase):
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
             run_config = setup_openai()
 
-        self.assertEqual(run_config.model.model, "gpt-4o-mini")
+        self.assertEqual(run_config.model.model, "gpt-5-nano")
         self.assertFalse(
             run_config.model_settings.retry.policy(
                 SimpleNamespace(

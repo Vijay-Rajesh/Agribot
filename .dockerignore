@@ -1,0 +1,16 @@
+.git
+.venv
+.venv312
+venv
+venv312
+__pycache__
+*.py[cod]
+*.egg-info
+.env
+.env.*
+.files
+.chainlit/*
+!.chainlit/config.toml
+build
+dist
+generated

@@ -3,7 +3,7 @@ import json
 import math
 import random
 from collections.abc import Awaitable, Callable
-from typing import Optional
+from typing import Any, Optional
 
 import chainlit as cl
 from agents import Agent, function_tool
@@ -24,7 +24,7 @@ FARMING_PHRASES = [
 
 def create_farmbot_agent(
     preferred_language: str = "english",
-    satellite_analysis: Callable[..., Awaitable[bool]] | None = None,
+    satellite_analysis: Callable[..., Awaitable[bool | dict[str, Any]]] | None = None,
 ) -> Agent:
     """Create FarmBot with an Earth Engine NDVI/NDMI analysis tool."""
 
@@ -62,7 +62,7 @@ def create_farmbot_agent(
             raise ValueError("Provide both start_date and end_date, or omit both.")
 
         if satellite_analysis is not None:
-            completed = await satellite_analysis(
+            analysis_result = await satellite_analysis(
                 latitude=latitude,
                 longitude=longitude,
                 place=place,
@@ -72,11 +72,17 @@ def create_farmbot_agent(
                 start_date=start_date,
                 end_date=end_date,
             )
+            if isinstance(analysis_result, dict):
+                return json.dumps({
+                    "completed": True,
+                    "analysis": analysis_result,
+                    "message": "Satellite analysis data was retrieved and is included for your summary.",
+                }, ensure_ascii=False)
             return json.dumps({
-                "completed": completed,
+                "completed": analysis_result,
                 "message": (
-                    "The full satellite report, maps, and pixel data are displayed in chat."
-                    if completed
+                    "The satellite report and maps are available in chat."
+                    if analysis_result
                     else "Satellite analysis failed. The error is displayed in chat."
                 ),
             }, ensure_ascii=False)

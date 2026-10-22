@@ -108,27 +108,45 @@ def prepare_image_data_urls(elements: Iterable[object]) -> list[str]:
         try:
             if path.stat().st_size > MAX_IMAGE_SIZE_BYTES:
                 raise ImageUploadError("Each image must be 12 MB or smaller.")
-            with warnings.catch_warnings():
-                warnings.simplefilter("error", Image.DecompressionBombWarning)
-                with Image.open(path) as source:
-                    if source.format not in SUPPORTED_IMAGE_FORMATS:
-                        raise ImageUploadError("Use a JPG, PNG, or WebP image.")
-                    width, height = source.size
-                    if width * height > MAX_IMAGE_PIXELS:
-                        raise ImageUploadError("The image dimensions are too large to analyze.")
-                    image = ImageOps.exif_transpose(source).convert("RGB")
+            image_bytes = path.read_bytes()
         except ImageUploadError:
             raise
-        except (OSError, UnidentifiedImageError, Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        except OSError as exc:
             raise ImageUploadError("The uploaded image is invalid or could not be read.") from exc
-
-        image.thumbnail(
-            (MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION),
-            Image.Resampling.LANCZOS,
-        )
-        buffer = io.BytesIO()
-        image.save(buffer, format="JPEG", quality=85, optimize=True)
-        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-        data_urls.append(f"data:image/jpeg;base64,{encoded}")
+        data_urls.append(prepare_image_bytes_data_url(image_bytes))
 
     return data_urls
+
+
+def prepare_image_bytes_data_url(image_bytes: bytes) -> str:
+    """Validate and compress image bytes for multimodal model input."""
+    if len(image_bytes) > MAX_IMAGE_SIZE_BYTES:
+        raise ImageUploadError("Each image must be 12 MB or smaller.")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(image_bytes)) as source:
+                if source.format not in SUPPORTED_IMAGE_FORMATS:
+                    raise ImageUploadError("Use a JPG, PNG, or WebP image.")
+                width, height = source.size
+                if width * height > MAX_IMAGE_PIXELS:
+                    raise ImageUploadError("The image dimensions are too large to analyze.")
+                image = ImageOps.exif_transpose(source).convert("RGB")
+    except ImageUploadError:
+        raise
+    except (
+        OSError,
+        UnidentifiedImageError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ) as exc:
+        raise ImageUploadError("The uploaded image is invalid or could not be read.") from exc
+
+    image.thumbnail(
+        (MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION),
+        Image.Resampling.LANCZOS,
+    )
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=85, optimize=True)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
