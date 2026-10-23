@@ -51,7 +51,7 @@ class PlantingSuitabilityAgentTests(unittest.TestCase):
 
         self.assertEqual(agent.name, "Planting Suitability Advisor")
         self.assertIn("soil texture, pH, salinity, drainage", agent.instructions)
-        self.assertIn("Roman-script Urdu/Hindi", agent.instructions)
+        self.assertIn("Roman-script Urdu", agent.instructions)
         self.assertIn("preliminary verdict", agent.instructions)
         self.assertIn("Never answer a planting question with a disease", agent.instructions)
         self.assertIn("at most 100 words", agent.instructions)

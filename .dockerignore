@@ -16,3 +16,5 @@ __pycache__
 build
 dist
 generated
+.deploy-tmp
+deploy/private

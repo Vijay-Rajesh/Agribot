@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
 from whatsapp import (
@@ -149,6 +149,26 @@ class WhatsAppWebhookTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.text, "challenge-789")
+
+    def test_webhook_routes_precede_included_chainlit_router(self):
+        asgi_app = FastAPI()
+        ui_router = APIRouter()
+
+        @ui_router.get("/{full_path:path}")
+        async def chainlit_fallback(full_path: str):
+            return {"fallback": full_path}
+
+        asgi_app.include_router(ui_router)
+        register_fastapi_routes(asgi_app, self.app)
+        client = TestClient(asgi_app)
+        response = client.get("/webhook", params={
+            "hub.mode": "subscribe", "hub.verify_token": "verify-me",
+            "hub.challenge": "nested-router-check",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, "nested-router-check")
+        self.assertEqual(client.get("/healthz").json(), {"status": "ok"})
+        self.assertEqual(client.get("/other-ui-path").json(), {"fallback": "other-ui-path"})
 
     def test_asgi_router_validates_signature_and_processes_message(self):
         body = json.dumps({

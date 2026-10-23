@@ -1,0 +1,16 @@
+#cloud-config
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - curl
+  - ca-certificates
+runcmd:
+  - [systemctl, enable, --now, docker]
+  - [usermod, -aG, docker, ubuntu]
+  - [install, -d, -m, '0750', -o, ubuntu, -g, ubuntu, /opt/agribot]
+  - [fallocate, -l, 2G, /swapfile]
+  - [chmod, '0600', /swapfile]
+  - [mkswap, /swapfile]
+  - [swapon, /swapfile]
+  - [sh, -c, 'echo "/swapfile none swap sw 0 0" >> /etc/fstab']

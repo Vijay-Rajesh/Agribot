@@ -1,0 +1,51 @@
+services:
+  agribot:
+    build:
+      context: ..
+    restart: unless-stopped
+    env_file: private/app.env
+    environment:
+      APP_SERVICE: all
+      PORT: "8000"
+      WHATSAPP_DATABASE_PATH: /app/.files/whatsapp.sqlite3
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/earthengine.json
+    volumes:
+      - conversations:/app/.files
+      - ./private/earthengine.json:/run/secrets/earthengine.json:ro
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      AGRIBOT_HOST: ${AGRIBOT_HOST:?Set AGRIBOT_HOST to the public HTTPS hostname}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      agribot:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+volumes:
+  conversations:
+  caddy_data:
+  caddy_config:

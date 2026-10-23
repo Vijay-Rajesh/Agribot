@@ -1073,15 +1073,10 @@ def register_fastapi_routes(asgi_app: FastAPI, flask_app: Flask) -> None:
         return
     routes = create_fastapi_router(flask_app).routes
     app_routes = asgi_app.router.routes
-    catch_all_index = next(
-        (
-            index
-            for index, route in enumerate(app_routes)
-            if getattr(route, "path", None) == "/{full_path:path}"
-        ),
-        len(app_routes),
-    )
-    app_routes[catch_all_index:catch_all_index] = routes
+    # FastAPI can wrap included routers lazily, hiding Chainlit's catch-all
+    # from a top-level path lookup. Put these explicit API routes first so
+    # the UI's fallback cannot return HTML for health checks or webhooks.
+    app_routes[0:0] = routes
     asgi_app.state.whatsapp_routes_registered = True
 
 

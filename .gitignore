@@ -19,5 +19,7 @@ chainlit.md
 generated/
 
 .venv
+.deploy-tmp/
+deploy/private/
 .files
 /src/gis_agent/chat_history.json

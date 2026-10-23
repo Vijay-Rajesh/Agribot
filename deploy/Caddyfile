@@ -1,0 +1,4 @@
+{$AGRIBOT_HOST} {
+    encode gzip
+    reverse_proxy agribot:8000
+}

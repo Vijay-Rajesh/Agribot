@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:0.5.31 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.5 AS uv
 
 FROM python:3.12-slim
 
@@ -19,8 +19,10 @@ COPY .chainlit/config.toml ./.chainlit/config.toml
 RUN uv sync --frozen --no-dev
 
 RUN useradd --create-home --uid 10001 appuser \
-    && mkdir -p /app/.files \
-    && chown appuser:appuser /app/.files
+    && mkdir -p /app/.files /app/.chainlit /app/src/gis_agent/generated \
+    && printf '# Agribot\n' > /app/chainlit.md \
+    && chown -R appuser:appuser /app/.files /app/.chainlit \
+       /app/src/gis_agent/generated /app/chainlit.md
 
 USER appuser
 
